@@ -46,4 +46,20 @@ pub enum Commands {
         #[arg(last = true)]
         args: Vec<String>,
     },
+
+    /// Build the project into an executable or sysimage
+    Build {
+        /// Build an executable app (calls PackageCompiler.create_app)
+        #[arg(long)]
+        app: bool,
+        /// Build a sysimage (calls PackageCompiler.create_sysimage)
+        #[arg(long)]
+        sysimage: bool,
+        /// Entry point file (e.g. main.jl). Default is src/ProjectName.jl or main.jl
+        #[arg(short, long)]
+        entry: Option<String>,
+        /// Output directory
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }

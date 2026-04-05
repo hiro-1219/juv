@@ -3,6 +3,8 @@ mod cli;
 mod julia;
 mod manifest;
 mod downloader;
+mod project;
+mod version_manager;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -16,11 +18,12 @@ use anyhow::{Result, Context};
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
+    let julia_cmd = resolve_julia_command()?;
 
     match args.command {
         Commands::New { path } => {
-            println!("{} `{}`", "Creating".green().bold(), path);
-            julia::run_pkg_generate(&path)?;
+            println!("{} `{}` using {:?}", "Creating".green().bold(), path, julia_cmd);
+            julia::run_pkg_generate(&julia_cmd, &path)?;
             println!("{} Project successfully created inside `{}`", "Success".green().bold(), path);
         }
         Commands::Init => {
@@ -44,24 +47,24 @@ async fn main() -> Result<()> {
             } else {
                 format!("using Pkg; Pkg.add(\"{}\")", package)
             };
-            julia::run_pkg_command(&code)?;
+            julia::run_pkg_command(&julia_cmd, &code)?;
             println!("{} Package `{}` added to Manifest", "Resolved".green().bold(), package);
             
             // Execute parallel sync after adding
-            run_parallel_sync().await?;
+            run_parallel_sync(&julia_cmd).await?;
         }
         Commands::Remove { package } => {
             println!("{} package `{}` via Pkg.jl", "Removing".green().bold(), package);
             let code = format!("using Pkg; Pkg.rm(\"{}\")", package);
-            julia::run_pkg_command(&code)?;
+            julia::run_pkg_command(&julia_cmd, &code)?;
             println!("{} Package `{}` removed", "Success".green().bold(), package);
         }
         Commands::Sync => {
             println!("{} environment (Resolving dependencies)", "Syncing".green().bold());
             let code = "using Pkg; Pkg.resolve()";
-            julia::run_pkg_command(code)?;
+            julia::run_pkg_command(&julia_cmd, code)?;
             
-            if let Err(e) = run_parallel_sync().await {
+            if let Err(e) = run_parallel_sync(&julia_cmd).await {
                 println!("{} {:?}", "Error during sync:".red().bold(), e);
             } else {
                 println!("{} Environment is in sync", "Success".green().bold());
@@ -69,14 +72,17 @@ async fn main() -> Result<()> {
         }
         Commands::SyncOnly => {
             println!("{} packages concurrently", "Syncing".green().bold());
-            if let Err(e) = run_parallel_sync().await {
+            if let Err(e) = run_parallel_sync(&julia_cmd).await {
                 println!("{} {:?}", "Error during parallel sync:".red().bold(), e);
             } else {
                 println!("{} Artifact syncing complete", "Success".green().bold());
             }
         }
         Commands::Run { script, args } => {
-            let mut cmd = Command::new("julia");
+            let mut cmd = Command::new(&julia_cmd[0]);
+            if julia_cmd.len() > 1 {
+                cmd.args(&julia_cmd[1..]);
+            }
             cmd.arg("--project=@."); // Use local environment
             cmd.arg(&script);
             cmd.args(&args);
@@ -93,12 +99,71 @@ async fn main() -> Result<()> {
                 anyhow::bail!("Process exited with status: {}", status);
             }
         }
+        Commands::Build { app, sysimage, entry, output } => {
+            run_build(&julia_cmd, app, sysimage, entry, output).await?;
+        }
     }
 
     Ok(())
 }
 
-async fn run_parallel_sync() -> Result<()> {
+fn resolve_julia_command() -> Result<Vec<String>> {
+    let pwd = env::current_dir()?;
+    let project_toml = pwd.join("Project.toml");
+    
+    if project_toml.exists() {
+        let content = fs::read_to_string(&project_toml)?;
+        if let Ok(proj) = project::Project::parse(&content) {
+            if let Some(compat) = proj.get_julia_compat() {
+                return version_manager::check_and_get_julia_command(compat);
+            }
+        }
+    }
+    
+    Ok(vec!["julia".to_string()])
+}
+
+async fn run_build(julia_cmd: &[String], app: bool, sysimage: bool, entry: Option<String>, output: Option<String>) -> Result<()> {
+    if !app && !sysimage {
+        anyhow::bail!("Please specify either --app or --sysimage for build.");
+    }
+
+    println!("{} Ensuring PackageCompiler.jl is installed...", "Step 1/3".blue().bold());
+    let ensure_pkg = "using Pkg; if !haskey(Pkg.dependencies(), Base.UUID(\"9b29e061-f09b-5136-be59-e93540c49f8b\")) \
+                      Pkg.add(\"PackageCompiler\") end";
+    julia::run_pkg_command(julia_cmd, ensure_pkg)?;
+
+    let output_path = output.unwrap_or_else(|| "build".to_string());
+    let entry_point = entry.unwrap_or_else(|| {
+        if Path::new("main.jl").exists() {
+            "main.jl".to_string()
+        } else {
+            "src/main.jl".to_string() // Rough guess
+        }
+    });
+
+    if app {
+        println!("{} Building application in `{}` using entry `{}`", "Step 2/3".blue().bold(), output_path, entry_point);
+        let jl_code = format!(
+            "using PackageCompiler; create_app(\".\", \"{}\"; force=true, incremental=false)",
+            output_path
+        );
+        julia::run_pkg_command(julia_cmd, &jl_code)?;
+    } else if sysimage {
+        println!("{} Building sysimage in `{}`", "Step 2/3".blue().bold(), output_path);
+        let jl_code = format!(
+            "using PackageCompiler; create_sysimage(sysimage_path=\"{}/sysimage.so\")",
+            output_path
+        );
+        fs::create_dir_all(&output_path)?;
+        julia::run_pkg_command(julia_cmd, &jl_code)?;
+    }
+
+    println!("{} Build complete!", "Step 3/3".green().bold());
+    Ok(())
+}
+
+async fn run_parallel_sync(julia_cmd: &[String]) -> Result<()> {
     let pwd = env::current_dir()?;
     let manifest_path = pwd.join("Manifest.toml");
     
@@ -116,7 +181,7 @@ async fn run_parallel_sync() -> Result<()> {
         for pkg in pkgs {
             if let Some(sha) = pkg.git_tree_sha1.clone() {
                 // Get local target path
-                let target_path_str = match julia::get_slug_path(&name, &pkg.uuid, &sha) {
+                let target_path_str = match julia::get_slug_path(julia_cmd, &name, &pkg.uuid, &sha) {
                     Ok(p) => p,
                     Err(e) => {
                         println!("{} {} for {} ({})", "Warning".yellow().bold(), e, name, pkg.uuid);
