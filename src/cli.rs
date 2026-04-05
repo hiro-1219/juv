@@ -35,6 +35,9 @@ pub enum Commands {
     /// Instantiate/sync the project environment from Project.toml / Manifest.toml
     Sync,
 
+    /// Pure Rust concurrent artifact synchronization (bypasses Pkg resolver)
+    SyncOnly,
+
     /// Run a script in the project environment
     Run {
         /// Script path to run
