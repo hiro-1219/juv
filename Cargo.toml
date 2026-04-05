@@ -18,3 +18,4 @@ serde_json = "1.0.149"
 tar = "0.4.45"
 tokio = { version = "1.51.0", features = ["macros", "process", "rt-multi-thread"] }
 toml = "1.1.2"
+uuid = { version = "1.10.0", features = ["v4"] }

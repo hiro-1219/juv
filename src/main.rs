@@ -14,6 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use colored::Colorize;
 use anyhow::{Result, Context};
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,9 +36,10 @@ async fn main() -> Result<()> {
                 let dirname = pwd.file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("Env");
-                let toml_content = format!("name = \"{}\"\nauthors = [\"juv\"]\n", dirname);
+                let new_uuid = Uuid::new_v4().to_string();
+                let toml_content = format!("name = \"{}\"\nuuid = \"{}\"\nauthors = [\"juv\"]\n", dirname, new_uuid);
                 fs::write(&project_toml, toml_content).context("Failed to write Project.toml")?;
-                println!("{} Project.toml in the current directory", "Initialized".green().bold());
+                println!("{} Project.toml in the current directory (with name and uuid)", "Initialized".green().bold());
             }
         }
         Commands::Add { packages } => {
@@ -131,6 +133,37 @@ fn resolve_julia_command() -> Result<Vec<String>> {
 async fn run_build(julia_cmd: &[String], app: bool, sysimage: bool, entry: Option<String>, output: Option<String>) -> Result<()> {
     if !app && !sysimage {
         anyhow::bail!("Please specify either --app or --sysimage for build.");
+    }
+
+    // Ensure name and uuid exist in Project.toml (required by PackageCompiler)
+    let project_toml_path = Path::new("Project.toml");
+    if project_toml_path.exists() {
+        let content = fs::read_to_string(project_toml_path)?;
+        let mut toml_val: toml::Value = toml::from_str(&content)?;
+        let mut changed = false;
+        
+        if let Some(table) = toml_val.as_table_mut() {
+            if !table.contains_key("name") {
+                let dirname = env::current_dir()?
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("App")
+                    .to_string();
+                table.insert("name".to_string(), toml::Value::String(dirname));
+                println!("{} field to Project.toml", "Adding missing `name`".yellow().bold());
+                changed = true;
+            }
+            if !table.contains_key("uuid") {
+                table.insert("uuid".to_string(), toml::Value::String(Uuid::new_v4().to_string()));
+                println!("{} field to Project.toml", "Adding missing `uuid`".yellow().bold());
+                changed = true;
+            }
+        }
+        
+        if changed {
+            let new_content = toml::to_string_pretty(&toml_val)?;
+            fs::write(project_toml_path, new_content)?;
+        }
     }
 
     println!("{} Ensuring PackageCompiler.jl is installed...", "Step 1/3".blue().bold());
