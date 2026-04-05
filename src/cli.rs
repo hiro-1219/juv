@@ -20,16 +20,18 @@ pub enum Commands {
     /// Initialize a Julia project in the current directory
     Init,
 
-    /// Add a package to the project
+    /// Add packages to the project
     Add {
-        /// Package name to add
-        package: String,
+        /// Package names or URLs to add
+        #[arg(required = true)]
+        packages: Vec<String>,
     },
 
-    /// Remove a package from the project
+    /// Remove packages from the project
     Remove {
-        /// Package name to remove
-        package: String,
+        /// Package names to remove
+        #[arg(required = true)]
+        packages: Vec<String>,
     },
 
     /// Instantiate/sync the project environment from Project.toml / Manifest.toml

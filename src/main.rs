@@ -40,24 +40,29 @@ async fn main() -> Result<()> {
                 println!("{} Project.toml in the current directory", "Initialized".green().bold());
             }
         }
-        Commands::Add { package } => {
-            println!("{} package `{}` via Pkg.jl resolver", "Adding".green().bold(), package);
-            let code = if package.starts_with("http://") || package.starts_with("https://") || package.starts_with("git@") {
-                format!("using Pkg; Pkg.add(url=\"{}\")", package)
-            } else {
-                format!("using Pkg; Pkg.add(\"{}\")", package)
-            };
+        Commands::Add { packages } => {
+            println!("{} packages `{:?}` via Pkg.jl resolver", "Adding".green().bold(), packages);
+            let specs: Vec<String> = packages.iter().map(|p| {
+                if p.starts_with("http://") || p.starts_with("https://") || p.starts_with("git@") {
+                    format!("Pkg.PackageSpec(url=\"{}\")", p)
+                } else {
+                    format!("Pkg.PackageSpec(name=\"{}\")", p)
+                }
+            }).collect();
+            let code = format!("using Pkg; Pkg.add([{}])", specs.join(", "));
+            
             julia::run_pkg_command(&julia_cmd, &code)?;
-            println!("{} Package `{}` added to Manifest", "Resolved".green().bold(), package);
+            println!("{} Packages `{:?}` added to Manifest", "Resolved".green().bold(), packages);
             
             // Execute parallel sync after adding
             run_parallel_sync(&julia_cmd).await?;
         }
-        Commands::Remove { package } => {
-            println!("{} package `{}` via Pkg.jl", "Removing".green().bold(), package);
-            let code = format!("using Pkg; Pkg.rm(\"{}\")", package);
+        Commands::Remove { packages } => {
+            println!("{} packages `{:?}` via Pkg.jl", "Removing".green().bold(), packages);
+            let pkg_list = packages.iter().map(|p| format!("\"{}\"", p)).collect::<Vec<_>>().join(", ");
+            let code = format!("using Pkg; Pkg.rm([{}])", pkg_list);
             julia::run_pkg_command(&julia_cmd, &code)?;
-            println!("{} Package `{}` removed", "Success".green().bold(), package);
+            println!("{} Packages `{:?}` removed", "Success".green().bold(), packages);
         }
         Commands::Sync => {
             println!("{} environment (Resolving dependencies)", "Syncing".green().bold());
